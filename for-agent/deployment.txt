@@ -1,0 +1,12 @@
+# Next.js Deployment Error Prevention Guidelines
+Apostrophes in JSX/TSX Files: Always use &apos; instead of single quotes (') in text content within JSX/TSX files
+Example: You&apos;ll instead of You'll
+This applies to all user-facing text, including headings, paragraphs, and button labels
+
+Dynamic Imports in Next.js: When using dynamic imports, avoid variable names like module or chapterModule
+Instead, use descriptive names that don't conflict with reserved words:
+;
+
+Image Component Usage: Always use Next.js's Image component from next/image instead of HTML <img> tags
+Include all required props: src, alt, and either width/height or fill
+>
