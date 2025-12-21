@@ -51,3 +51,10 @@ KPI_CARD_STYLE = {
     'fontFamily': 'Arial, sans-serif',
 }
 
+# Contact information (easy to update in one place)
+APP_OWNER = {
+    'name': 'Raidh Razeen',
+    'email': 'raidhrazeen@gmail.com',
+    'linkedin': 'linkedin.com/in/raidh-razeen/'
+}
+

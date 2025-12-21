@@ -7,56 +7,87 @@ import pandas as pd
 import numpy as np
 import os
 import warnings
+import traceback
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict
 
 
-def find_data_file(filename: str) -> str:
+def get_data_path(filename: str) -> str:
     """
-    Find data file in /data folder or current directory.
+    Robust path detection for data files.
+    Searches in order:
+    1. ./data/<filename>
+    2. ./<filename>
+    3. ../data/<filename>
     
     Args:
         filename: Name of the file to find
         
     Returns:
-        Full path to the file
+        Full absolute path to the file
+        
+    Raises:
+        FileNotFoundError: If file not found in any location, with paths tried
     """
-    # Try /data folder first
+    paths_tried = []
+    
+    # Try ./data/<filename>
     data_path = Path('data') / filename
+    paths_tried.append(str(data_path.resolve()))
     if data_path.exists():
-        return str(data_path)
+        return str(data_path.resolve())
     
-    # Fallback to current directory
-    if Path(filename).exists():
-        return filename
+    # Try ./<filename>
+    current_path = Path(filename)
+    paths_tried.append(str(current_path.resolve()))
+    if current_path.exists():
+        return str(current_path.resolve())
     
-    # Try parent directory
-    parent_path = Path('..') / filename
-    if parent_path.exists():
-        return str(parent_path)
+    # Try ../data/<filename>
+    parent_data_path = Path('..') / 'data' / filename
+    paths_tried.append(str(parent_data_path.resolve()))
+    if parent_data_path.exists():
+        return str(parent_data_path.resolve())
     
-    raise FileNotFoundError(f"Could not find {filename} in data/, current directory, or parent directory")
+    # If none found, raise with all paths tried
+    raise FileNotFoundError(
+        f"Could not find {filename}. Paths tried:\n" + 
+        "\n".join(f"  - {p}" for p in paths_tried)
+    )
+
+
+def find_data_file(filename: str) -> str:
+    """
+    Legacy function name - calls get_data_path for backward compatibility.
+    """
+    return get_data_path(filename)
 
 
 def read_excel_any(path: str, sheet: Optional[str] = None) -> pd.DataFrame:
     """
-    Read Excel file safely, trying openpyxl for xlsx and pandas for xls.
+    Read Excel file safely, using openpyxl for xlsx and xlrd for xls.
     Handles engine issues gracefully.
     
     Args:
-        path: Path to Excel file
+        path: Path to Excel file (can be filename or full path)
         sheet: Sheet name or index (None for first sheet)
         
     Returns:
         DataFrame with the sheet data
     """
-    path = find_data_file(path)
+    # If path doesn't exist as-is, try to find it using get_data_path
+    if not Path(path).exists():
+        try:
+            path = get_data_path(Path(path).name)  # Extract just filename
+        except FileNotFoundError:
+            # If get_data_path fails, try the original path anyway
+            pass
     
     try:
         # Try openpyxl for xlsx files
         if path.endswith('.xlsx'):
             return pd.read_excel(path, sheet_name=sheet, engine='openpyxl')
-        # Use xlrd for xls files
+        # Use xlrd for xls files - REQUIRED for .xls
         elif path.endswith('.xls'):
             return pd.read_excel(path, sheet_name=sheet, engine='xlrd')
         else:
@@ -398,120 +429,276 @@ def load_sector_output_from_prod_series_251125() -> pd.DataFrame:
         return pd.DataFrame(columns=["date", "sector", "value"])
 
 
-def load_productivity() -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+def load_productivity() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[str]]:
     """
     Load productivity data from lprod01.xls.
-    Extracts headline measures and optionally sector productivity.
+    Extracts headline measures from Table 1 (whole economy productivity).
+    
+    Based on workbook inspection:
+    - Table 1 contains "Labour productivity key measures"
+    - Row 3: Sector headers (Whole economy, Production, Manufacturing, Services)
+    - Rows 4-5: Measure names (Output per worker, Output per job, Output per hour)
+    - Row 7: Section codes (A-U, B-E, C, G-U)
+    - Row 9: ONS codes
+    - Row 10+: Years in column 1, values in columns 2-10
     
     Returns:
-        Tuple of (headline_df, sector_df)
-        headline_df: columns: date, measure, value
-        sector_df: columns: date, sector, value (or None if not found)
+        Tuple of (headline_df, sector_df, error_message)
+        headline_df: columns: date, measure, value (or None if error)
+        sector_df: columns: date, sector, value (or None if not found or error)
+        error_message: Error message string if loading failed, None if successful
     """
+    headline_data = []
+    
     try:
-        path = find_data_file("lprod01.xls")
+        # Step 1: Find file path
+        path = get_data_path("lprod01.xls")
+        abs_path = str(Path(path).resolve())
+        print(f"\n[PRODUCTIVITY LOADER] Resolved file path: {abs_path}")
         
-        # Read all sheets
+        # Step 2: Read Table 1 (the main productivity table)
+        print(f"[PRODUCTIVITY LOADER] Reading Table 1...")
+        df = pd.read_excel(path, sheet_name='Table 1', engine='xlrd', header=None)
+        print(f"[PRODUCTIVITY LOADER] Table 1 shape: {df.shape}")
+        
+        # Step 3: Parse the known structure
+        # Column 1 has years starting around row 10
+        # Columns 2-10 have productivity values
+        # The measure names are in rows 4-5
+        
+        # Find the header rows by looking for "Output per" pattern
+        measure_row = None
+        for idx in range(10):
+            row_str = ' '.join([str(v).lower() for v in df.iloc[idx].values if pd.notna(v)])
+            if 'output per' in row_str:
+                measure_row = idx
+                break
+        
+        if measure_row is None:
+            # Fallback: assume row 4-5 based on inspection
+            measure_row = 4
+        
+        print(f"[PRODUCTIVITY LOADER] Measure row detected at: {measure_row}")
+        
+        # Find where data starts (first row with a year in column 1)
+        data_start = None
+        year_col = 1  # Years are in column 1
+        
+        for idx in range(10, min(50, len(df))):
+            cell_val = df.iloc[idx, year_col]
+            if pd.notna(cell_val):
+                try:
+                    year = int(float(cell_val))
+                    if 1900 <= year <= 2100:
+                        data_start = idx
+                        print(f"[PRODUCTIVITY LOADER] Data starts at row {data_start} with year {year}")
+                        break
+                except (ValueError, TypeError):
+                    continue
+        
+        if data_start is None:
+            raise ValueError("Could not find data start row with years")
+        
+        # Extract column headers (measure types)
+        # Based on inspection: columns 2-10 contain different measures
+        # Row 4: "Output per" labels
+        # Row 5: "worker", "job", "hour" continuations
+        
+        # Build column mapping from rows 4-5
+        col_measures = {}
+        for col in range(2, min(11, df.shape[1])):
+            # Get the sector from row 3
+            sector = str(df.iloc[3, col]).strip() if pd.notna(df.iloc[3, col]) else ''
+            # Get measure type from rows 4-5
+            measure_part1 = str(df.iloc[4, col]).strip() if pd.notna(df.iloc[4, col]) else ''
+            measure_part2 = str(df.iloc[5, col]).strip() if pd.notna(df.iloc[5, col]) else ''
+            
+            full_measure = f"{measure_part1} {measure_part2}".strip()
+            
+            # Map to standard measure names
+            full_lower = full_measure.lower()
+            if 'hour' in full_lower:
+                measure_key = 'Output per hour'
+            elif 'worker' in full_lower:
+                measure_key = 'Output per worker'
+            elif 'job' in full_lower:
+                measure_key = 'Output per job'
+            else:
+                continue  # Skip unknown measures
+            
+            # Only take "Whole economy" columns (first set of each measure)
+            sector_lower = sector.lower()
+            if 'whole' in sector_lower or sector == '' or col <= 4:
+                if measure_key not in col_measures:  # Take first occurrence
+                    col_measures[col] = measure_key
+                    print(f"[PRODUCTIVITY LOADER] Column {col}: {measure_key} (sector: {sector})")
+        
+        if not col_measures:
+            raise ValueError("Could not identify any measure columns")
+        
+        # Extract data
+        for col, measure in col_measures.items():
+            series_data = []
+            for idx in range(data_start, len(df)):
+                year_val = df.iloc[idx, year_col]
+                data_val = df.iloc[idx, col]
+                
+                # Parse year
+                if pd.isna(year_val):
+                    continue
+                try:
+                    year = int(float(year_val))
+                    if not (1900 <= year <= 2100):
+                        continue
+                except (ValueError, TypeError):
+                    continue
+                
+                # Parse value
+                if pd.isna(data_val):
+                    continue
+                try:
+                    # Handle "..", "-", blanks
+                    val_str = str(data_val).strip()
+                    if val_str in ['..', '-', '', 'nan']:
+                        continue
+                    val_str = val_str.replace(',', '')
+                    value = float(val_str)
+                except (ValueError, TypeError):
+                    continue
+                
+                # Create date (use Jan 1 for annual data)
+                date = pd.Timestamp(year=year, month=1, day=1)
+                series_data.append({'date': date, 'measure': measure, 'value': value})
+            
+            if series_data:
+                headline_data.append(pd.DataFrame(series_data))
+                print(f"[PRODUCTIVITY LOADER] Extracted {len(series_data)} rows for {measure}")
+        
+        # Step 4: If no data from Table 1, try fallback
+        if not headline_data:
+            print(f"[PRODUCTIVITY LOADER] Table 1 parsing failed, trying fallback...")
+            headline_data = _fallback_productivity_extraction(path)
+        
+        # Step 5: Combine and return
+        if headline_data:
+            headline_df = pd.concat(headline_data, ignore_index=True)
+            headline_df = headline_df.sort_values(['measure', 'date']).reset_index(drop=True)
+            
+            # Remove duplicates (keep first)
+            headline_df = headline_df.drop_duplicates(subset=['date', 'measure'], keep='first')
+            
+            print(f"\n[PRODUCTIVITY LOADER] ✓ Successfully loaded productivity data:")
+            print(f"  - Total rows: {len(headline_df)}")
+            print(f"  - Unique measures: {headline_df['measure'].unique().tolist()}")
+            print(f"  - Date range: {headline_df['date'].min()} to {headline_df['date'].max()}")
+            print(f"  - Sample data:\n{headline_df.head(10)}")
+            
+            return headline_df, None, None
+        else:
+            error_msg = "Could not extract any productivity measures from lprod01.xls"
+            print(f"[PRODUCTIVITY LOADER] ERROR: {error_msg}")
+            return None, None, error_msg
+        
+    except FileNotFoundError as e:
+        error_msg = str(e)
+        print(f"[PRODUCTIVITY LOADER] FILE NOT FOUND ERROR:")
+        print(traceback.format_exc())
+        return None, None, error_msg
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        print(f"[PRODUCTIVITY LOADER] ERROR loading productivity data:")
+        print(traceback.format_exc())
+        return None, None, error_msg
+
+
+def _fallback_productivity_extraction(path: str) -> List[pd.DataFrame]:
+    """
+    Fallback extraction: scan all sheets for any time series with years.
+    Returns a list of DataFrames with columns: date, measure, value
+    """
+    print(f"[PRODUCTIVITY LOADER] Running fallback extraction...")
+    results = []
+    
+    try:
         excel_file = pd.ExcelFile(path, engine='xlrd')
-        sheet_names = excel_file.sheet_names
         
-        headline_data = []
-        sector_data = []
-        
-        measures_to_find = ['Output per hour', 'Output per worker', 'Output per job']
-        
-        for sheet_name in sheet_names:
+        for sheet_name in excel_file.sheet_names:
+            if sheet_name in ['Index', 'Revisions']:
+                continue
+            
             try:
-                df = read_excel_any(path, sheet=sheet_name)
+                df = pd.read_excel(path, sheet_name=sheet_name, engine='xlrd', header=None)
                 
-                # Search for productivity measures
-                for idx, row in df.iterrows():
-                    row_str = ' '.join([str(val) for val in row.values if pd.notna(val)])
+                # Find a column with years
+                year_col = None
+                for col in range(min(3, df.shape[1])):
+                    year_count = 0
+                    for idx in range(min(100, len(df))):
+                        try:
+                            val = df.iloc[idx, col]
+                            if pd.notna(val):
+                                year = int(float(val))
+                                if 1900 <= year <= 2100:
+                                    year_count += 1
+                        except:
+                            pass
+                    if year_count > 10:
+                        year_col = col
+                        break
+                
+                if year_col is None:
+                    continue
+                
+                # Find first numeric column after year column
+                value_col = None
+                for col in range(year_col + 1, min(year_col + 5, df.shape[1])):
+                    numeric_count = 0
+                    for idx in range(10, min(100, len(df))):
+                        try:
+                            val = df.iloc[idx, col]
+                            if pd.notna(val):
+                                float(str(val).replace(',', ''))
+                                numeric_count += 1
+                        except:
+                            pass
+                    if numeric_count > 10:
+                        value_col = col
+                        break
+                
+                if value_col is None:
+                    continue
+                
+                # Extract series
+                series_data = []
+                for idx in range(len(df)):
+                    year_val = df.iloc[idx, year_col]
+                    data_val = df.iloc[idx, value_col]
                     
-                    for measure in measures_to_find:
-                        if measure.lower() in row_str.lower():
-                            # Found a measure, try to extract the series
-                            # Look for date columns and value columns
-                            # This is heuristic - adjust based on actual file structure
-                            
-                            # Try to find a table starting from this row
-                            if idx + 1 < len(df):
-                                table_df = df.iloc[idx:].copy()
-                                
-                                # Find header row (usually next row)
-                                if idx + 1 < len(df):
-                                    header_row = idx + 1
-                                    table_df.columns = table_df.iloc[0]
-                                    table_df = table_df.iloc[1:]
-                                    
-                                    # Find date and value columns
-                                    date_col = None
-                                    value_col = None
-                                    
-                                    for col in table_df.columns:
-                                        col_str = str(col).lower()
-                                        if 'time' in col_str or 'period' in col_str or 'quarter' in col_str or 'date' in col_str:
-                                            date_col = col
-                                        elif pd.api.types.is_numeric_dtype(table_df[col]):
-                                            if value_col is None:
-                                                value_col = col
-                                    
-                                    if date_col and value_col:
-                                        series_df = pd.DataFrame({
-                                            'date': pd.to_datetime(table_df[date_col], errors='coerce'),
-                                            'measure': measure,
-                                            'value': pd.to_numeric(table_df[value_col], errors='coerce')
-                                        })
-                                        series_df = series_df.dropna()
-                                        if len(series_df) > 0:
-                                            headline_data.append(series_df)
-                                            break
+                    try:
+                        year = int(float(year_val))
+                        if not (1900 <= year <= 2100):
+                            continue
+                        val_str = str(data_val).replace(',', '')
+                        if val_str in ['..', '-', '', 'nan', 'None']:
+                            continue
+                        value = float(val_str)
+                        date = pd.Timestamp(year=year, month=1, day=1)
+                        series_data.append({'date': date, 'measure': 'Output per hour (fallback)', 'value': value})
+                    except:
+                        continue
                 
-                # Look for sector productivity (simplified - would need file-specific logic)
-                # This is a placeholder - actual implementation would need to inspect the file structure
-                
+                if len(series_data) > 10:
+                    print(f"[PRODUCTIVITY LOADER] Fallback: Extracted {len(series_data)} rows from {sheet_name}")
+                    results.append(pd.DataFrame(series_data))
+                    break  # Use first valid sheet
+                    
             except Exception as e:
                 continue
-        
-        # If no data found with heuristic, try simpler approach: read first sheet and look for patterns
-        if len(headline_data) == 0:
-            df = read_excel_any(path)
-            
-            # Try to find any numeric series with dates
-            for col in df.columns:
-                if pd.api.types.is_datetime64_any_dtype(df[col]) or 'date' in str(col).lower() or 'time' in str(col).lower():
-                    date_col = col
-                    # Find numeric columns
-                    for val_col in df.select_dtypes(include=[np.number]).columns:
-                        series_df = pd.DataFrame({
-                            'date': pd.to_datetime(df[date_col], errors='coerce'),
-                            'measure': 'Output per hour',  # Default
-                            'value': df[val_col]
-                        })
-                        series_df = series_df.dropna()
-                        if len(series_df) > 0:
-                            headline_data.append(series_df)
-                            break
-        
-        if len(headline_data) == 0:
-            warnings.warn("Could not extract productivity measures from lprod01.xls. File structure may differ.")
-            return pd.DataFrame(columns=['date', 'measure', 'value']), None
-        
-        headline_df = pd.concat(headline_data, ignore_index=True)
-        headline_df = headline_df.sort_values(['measure', 'date']).reset_index(drop=True)
-        
-        sector_df = None
-        if len(sector_data) > 0:
-            sector_df = pd.concat(sector_data, ignore_index=True)
-            sector_df = sector_df.sort_values(['sector', 'date']).reset_index(drop=True)
-        else:
-            warnings.warn("Sector productivity data not extracted. Only headline measures available.")
-        
-        return headline_df, sector_df
-        
+    
     except Exception as e:
-        warnings.warn(f"Error loading productivity data: {str(e)}")
-        return pd.DataFrame(columns=['date', 'measure', 'value']), None
+        print(f"[PRODUCTIVITY LOADER] Fallback failed: {e}")
+    
+    return results
 
 
 def load_sector_productivity() -> pd.DataFrame:
@@ -762,44 +949,68 @@ def create_counterfactual(df: pd.DataFrame, date_col: str, value_col: str,
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col).reset_index(drop=True)
     
-    # Convert pre-crisis dates
+    # Detect if data is annual (all dates are Jan 1) or quarterly
+    is_annual = all(df[date_col].dt.month == 1) and all(df[date_col].dt.day == 1)
+    
+    # Convert pre-crisis dates - handle both annual and quarterly
     def parse_quarter(q_str):
         year, q = q_str.split('Q')
-        month = int(q) * 3
-        return pd.Timestamp(int(year), month, 1) + pd.offsets.QuarterEnd()
+        if is_annual:
+            # For annual data, just use the year
+            return pd.Timestamp(int(year), 1, 1)
+        else:
+            # For quarterly data, use quarter end
+            month = int(q) * 3
+            return pd.Timestamp(int(year), month, 1) + pd.offsets.QuarterEnd()
     
     start_date = parse_quarter(pre_crisis_start)
     end_date = parse_quarter(pre_crisis_end)
+    
+    # For annual data, use year boundaries
+    if is_annual:
+        start_year = int(pre_crisis_start.split('Q')[0])
+        end_year = int(pre_crisis_end.split('Q')[0])
+        start_date = pd.Timestamp(start_year, 1, 1)
+        end_date = pd.Timestamp(end_year, 12, 31)  # Include full year
     
     # Extract pre-crisis data
     pre_crisis = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)].copy()
     
     if len(pre_crisis) < 2:
-        warnings.warn("Insufficient pre-crisis data. Using all available data.")
-        pre_crisis = df.copy()
-        end_date = df[date_col].iloc[-1]
+        warnings.warn("Insufficient pre-crisis data. Using all available data before 2008.")
+        # Use all data before 2008
+        pre_crisis = df[df[date_col] < pd.Timestamp('2008-01-01')].copy()
+        if len(pre_crisis) < 2:
+            pre_crisis = df.copy()
+        end_date = pre_crisis[date_col].max()
     
-    # Calculate average quarterly growth rate (in logs)
+    # Calculate growth rate (in logs) - use years for annual data
     pre_crisis = pre_crisis.sort_values(date_col)
     pre_crisis['log_value'] = np.log(pre_crisis[value_col])
-    pre_crisis['quarter_diff'] = (pre_crisis[date_col] - pre_crisis[date_col].iloc[0]).dt.days / 90.25
+    
+    if is_annual:
+        # For annual data, use years as the time unit
+        pre_crisis['time_diff'] = (pre_crisis[date_col] - pre_crisis[date_col].iloc[0]).dt.days / 365.25
+    else:
+        # For quarterly data, use quarters
+        pre_crisis['time_diff'] = (pre_crisis[date_col] - pre_crisis[date_col].iloc[0]).dt.days / 90.25
     
     if len(pre_crisis) > 1:
         # Linear regression in log space
         from scipy import stats
         slope, intercept, r_value, p_value, std_err = stats.linregress(
-            pre_crisis['quarter_diff'], pre_crisis['log_value']
+            pre_crisis['time_diff'], pre_crisis['log_value']
         )
-        quarterly_growth_rate = slope
+        growth_rate = slope  # Annual or quarterly growth rate depending on data
     else:
-        quarterly_growth_rate = 0
+        growth_rate = 0
     
-    # Find projection start point
-    projection_start_idx = df[df[date_col] == end_date].index
+    # Find projection start point (last pre-crisis date)
+    projection_start_idx = df[df[date_col] <= end_date].index
     if len(projection_start_idx) == 0:
-        projection_start_idx = df[df[date_col] <= end_date].index[-1]
+        projection_start_idx = 0
     else:
-        projection_start_idx = projection_start_idx[0]
+        projection_start_idx = projection_start_idx[-1]
     
     projection_start_value = df[value_col].iloc[projection_start_idx]
     projection_start_date = df[date_col].iloc[projection_start_idx]
@@ -811,12 +1022,15 @@ def create_counterfactual(df: pd.DataFrame, date_col: str, value_col: str,
     result['gap'] = np.nan
     
     # Fill pre-crisis with actual values
-    result.loc[result[date_col] <= end_date, 'counterfactual'] = result.loc[result[date_col] <= end_date, 'actual']
+    result.loc[result[date_col] <= projection_start_date, 'counterfactual'] = result.loc[result[date_col] <= projection_start_date, 'actual']
     
-    # Project forward
+    # Project forward using the appropriate time unit
     for idx in range(projection_start_idx + 1, len(result)):
-        quarters_ahead = (result[date_col].iloc[idx] - projection_start_date).days / 90.25
-        result.loc[result.index[idx], 'counterfactual'] = projection_start_value * np.exp(quarterly_growth_rate * quarters_ahead)
+        if is_annual:
+            time_ahead = (result[date_col].iloc[idx] - projection_start_date).days / 365.25
+        else:
+            time_ahead = (result[date_col].iloc[idx] - projection_start_date).days / 90.25
+        result.loc[result.index[idx], 'counterfactual'] = projection_start_value * np.exp(growth_rate * time_ahead)
     
     # Calculate gap
     result['gap'] = result['counterfactual'] - result['actual']
