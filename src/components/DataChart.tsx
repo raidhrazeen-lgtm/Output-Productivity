@@ -23,6 +23,11 @@ interface DataChartProps {
   datasetType: 'housing' | 'wage';
 }
 
+type ChartDataPoint = {
+  name: string;
+  [key: string]: string | number | undefined;
+};
+
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
 
 export default function DataChart({ data, datasetName, datasetType }: DataChartProps) {
@@ -70,11 +75,15 @@ export default function DataChart({ data, datasetName, datasetType }: DataChartP
     }
   };
 
-  const chartData = processDataForCharts();
+  const chartData = processDataForCharts() as ChartDataPoint[];
 
   // Get numeric columns for chart selection
   const numericColumns = chartData.length > 0
-    ? Object.keys(chartData[0]).filter(key => key !== 'name' && typeof chartData[0][key] === 'number')
+    ? Object.keys(chartData[0]).filter(key => {
+        if (key === 'name') return false;
+        const value = (chartData[0] as Record<string, unknown>)[key];
+        return typeof value === 'number';
+      })
     : [];
 
   if (chartData.length === 0 || numericColumns.length === 0) {
@@ -217,3 +226,7 @@ export default function DataChart({ data, datasetName, datasetType }: DataChartP
     </div>
   );
 }
+
+
+
+
