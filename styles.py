@@ -55,6 +55,7 @@ KPI_CARD_STYLE = {
 APP_OWNER = {
     'name': 'Raidh Razeen',
     'email': 'raidhrazeen@gmail.com',
-    'linkedin': 'linkedin.com/in/raidh-razeen/'
+    'linkedin': 'linkedin.com/in/raidh-razeen/',
+    'website': 'raidhrazeen.xyz'
 }
 

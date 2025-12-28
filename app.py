@@ -193,48 +193,71 @@ app.layout = html.Div([
                     'marginBottom': '5px',
                     'color': TEXT_COLOR,
                     'fontFamily': 'Arial, sans-serif',
-                    'fontSize': '32px'
+                    'fontSize': '32px',
+                    'textAlign': 'center'
                 }),
                 html.P("Why UK productivity stalled after 2008", 
                        style={
                            'margin': '0',
                            'color': TEXT_COLOR, 
                            'fontSize': '16px',
-                           'fontFamily': 'Arial, sans-serif'
+                           'fontFamily': 'Arial, sans-serif',
+                           'textAlign': 'center'
                        })
-            ], style={'flex': '1'}),
-            html.Div([
-                html.Div(APP_OWNER['name'], style={
-                    'fontWeight': 'bold',
-                    'fontSize': '12px',
-                    'marginBottom': '3px',
-                    'lineHeight': '1.4',
-                    'color': TEXT_COLOR,
-                    'fontFamily': 'Arial, sans-serif'
-                }),
-                html.Div([
-                    html.A(APP_OWNER['email'], 
-                           href=f'mailto:{APP_OWNER["email"]}',
-                           style={'color': TEXT_COLOR, 'textDecoration': 'none', 'fontSize': '11px', 'lineHeight': '1.4'},
-                           target='_self'),
-                ], style={'marginBottom': '2px'}),
-                html.Div([
-                    html.A(APP_OWNER['linkedin'],
-                           href=f'https://{APP_OWNER["linkedin"]}' if not APP_OWNER['linkedin'].startswith('http') else APP_OWNER['linkedin'],
-                           style={'color': TEXT_COLOR, 'textDecoration': 'none', 'fontSize': '11px', 'lineHeight': '1.4'},
-                           target='_blank'),
-                ])
             ], style={
+                'position': 'relative',
+                'width': '100%'
+            }),
+            html.Div([
+                # Row 1: Name | Email
+                html.Div([
+                    html.Div([
+                        html.Span(APP_OWNER['name'], style={'fontSize': '11px', 'color': TEXT_COLOR, 'fontWeight': 'bold'})
+                    ], style={'marginRight': '20px'}),
+                    html.Div([
+                        html.Span('Email: ', style={'fontSize': '11px', 'color': TEXT_COLOR}),
+                        html.A(APP_OWNER['email'], 
+                               href=f'mailto:{APP_OWNER["email"]}',
+                               style={'color': 'red', 'textDecoration': 'underline', 'fontSize': '11px', 'lineHeight': '1.4'},
+                               target='_self'),
+                    ])
+                ], style={
+                    'display': 'flex',
+                    'marginBottom': '8px',
+                    'justifyContent': 'flex-end'
+                }),
+                # Row 2: LinkedIn | Website
+                html.Div([
+                    html.Div([
+                        html.Span('LinkedIn: ', style={'fontSize': '11px', 'color': TEXT_COLOR}),
+                        html.A('raidh-razeen',
+                               href=f'https://{APP_OWNER["linkedin"]}' if not APP_OWNER['linkedin'].startswith('http') else APP_OWNER['linkedin'],
+                               style={'color': 'red', 'textDecoration': 'underline', 'fontSize': '11px', 'lineHeight': '1.4'},
+                               target='_blank'),
+                    ], style={'marginRight': '20px'}),
+                    html.Div([
+                        html.Span('Website: ', style={'fontSize': '11px', 'color': TEXT_COLOR}),
+                        html.A(APP_OWNER['website'],
+                               href=f'https://{APP_OWNER["website"]}' if not APP_OWNER['website'].startswith('http') else APP_OWNER['website'],
+                               style={'color': 'red', 'textDecoration': 'underline', 'fontSize': '11px', 'lineHeight': '1.4'},
+                               target='_blank'),
+                    ])
+                ], style={
+                    'display': 'flex',
+                    'justifyContent': 'flex-end'
+                })
+            ], style={
+                'position': 'absolute',
+                'top': '0',
+                'right': '0',
                 'textAlign': 'right',
                 'fontFamily': 'Arial, sans-serif',
                 'color': TEXT_COLOR,
                 'lineHeight': '1.4'
             })
         ], style={
-            'display': 'flex',
-            'justifyContent': 'space-between',
-            'alignItems': 'flex-start',
-            'maxWidth': '100%'
+            'position': 'relative',
+            'width': '100%'
         })
     ], style={
         'padding': '20px', 
